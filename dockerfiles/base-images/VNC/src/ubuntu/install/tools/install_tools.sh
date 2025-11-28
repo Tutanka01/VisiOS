@@ -13,7 +13,8 @@ apt-get install -y --no-install-recommends \
     xdotool \
     imagemagick \
     xfce4-screenshooter \
-    x11-apps
+    x11-apps \
+    vncdotool
 
 # --- Installation de Firefox (Version .deb via PPA Mozilla Team) ---
 # Ubuntu 24.04 force l'installation via Snap par défaut, ce qui ne fonctionne pas bien dans Docker.

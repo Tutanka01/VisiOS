@@ -9,9 +9,10 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import shlex
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import docker
 from docker.errors import NotFound, APIError
@@ -23,6 +24,25 @@ except ImportError:  # pragma: no cover
     Image = None  # Pillow is only needed when screenshots must be inspected
 
 LOGGER = logging.getLogger(__name__)
+INPUT_TOKEN_PATTERN = re.compile(r"(<[^>]+>)")
+SPECIAL_KEYS = {
+    "ENTER": "Return",
+    "RETURN": "Return",
+    "TAB": "Tab",
+    "ESC": "Escape",
+    "ESCAPE": "Escape",
+    "BACKSPACE": "BackSpace",
+    "DELETE": "Delete",
+    "SPACE": "space",
+    "UP": "Up",
+    "DOWN": "Down",
+    "LEFT": "Left",
+    "RIGHT": "Right",
+    "CTRL": "ctrl",
+    "ALT": "alt",
+    "SHIFT": "shift",
+    "META": "meta",
+}
 
 
 def _env_float(key: str, default: float) -> float:
@@ -44,6 +64,9 @@ DEFAULT_NAME = os.getenv("VISIOS_SANDBOX_NAME", "visios-sandbox")
 DEFAULT_PORT = _env_int("VISIOS_SANDBOX_PORT", 6901)
 DEFAULT_WIDTH = _env_int("VISIOS_SANDBOX_WIDTH", 1600)
 DEFAULT_HEIGHT = _env_int("VISIOS_SANDBOX_HEIGHT", 900)
+INPUT_BACKEND = os.getenv("VISIOS_INPUT_BACKEND", "xdotool").lower()
+VNC_HOST = os.getenv("VISIOS_VNC_HOST", "127.0.0.1")
+VNC_PORT = _env_int("VISIOS_VNC_PORT", 5901)
 MAX_SCREENSHOT_RETRIES = _env_int("VISIOS_SCREENSHOT_RETRIES", 5)
 SCREENSHOT_RETRY_DELAY = _env_float("VISIOS_SCREENSHOT_RETRY_DELAY", 2.0)
 
@@ -76,6 +99,7 @@ class SandboxManager:
         self.screen_size = screen_size
         self.client = docker.from_env()
         self.container: Optional[Container] = None
+        self.input_backend = INPUT_BACKEND
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
@@ -209,13 +233,41 @@ class SandboxManager:
         """Click at the provided coordinates using xdotool."""
 
         target_x, target_y = self._coerce_coordinates(x, y, absolute)
-        self.execute_command(f"xdotool mousemove {target_x} {target_y} click 1")
+        if self.input_backend == "vncdotool":
+            self._vncdotool_command(f"move {target_x} {target_y}")
+            self._vncdotool_command("click 1")
+        else:
+            self.execute_command(f"xdotool mousemove {target_x} {target_y} click 1")
 
     def send_text(self, text: str) -> None:
         """Type arbitrary text inside the sandbox."""
 
         safe = text.replace("\n", " ")
-        self.execute_command(f"xdotool type --delay 50 --clearmodifiers {shlex.quote(safe)}")
+        if self.input_backend == "vncdotool":
+            self._vncdotool_type(safe)
+            return
+
+        for token_type, payload in self._tokenize_input(safe):
+            if token_type == "text" and payload:
+                self.execute_command(
+                    f"xdotool type --delay 50 --clearmodifiers {shlex.quote(payload)}"
+                )
+            elif token_type == "key" and payload:
+                self.execute_command(f"xdotool key --clearmodifiers {shlex.quote(payload)}")
+
+    def send_scroll(self, delta_lines: float) -> None:
+        """Scroll vertically; positive = down, negative = up."""
+
+        clicks = int(delta_lines)
+        if clicks == 0:
+            return
+        direction = "Down" if clicks > 0 else "Up"
+        repeat = abs(clicks)
+        if self.input_backend == "vncdotool":
+            for _ in range(repeat):
+                self._vncdotool_command(f"key {direction}")
+        else:
+            self.execute_command(f"xdotool key --repeat {repeat} --delay 50 {direction}")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -243,3 +295,47 @@ class SandboxManager:
             except NotFound as exc:  # pragma: no cover
                 raise RuntimeError("Sandbox container is not running") from exc
         return self.container
+
+    # ------------------------------------------------------------------
+    # Text helper utilities
+    # ------------------------------------------------------------------
+    def _tokenize_input(self, text: str) -> List[Tuple[str, str]]:
+        tokens: List[Tuple[str, str]] = []
+        for chunk in INPUT_TOKEN_PATTERN.split(text):
+            if not chunk:
+                continue
+            if chunk.startswith("<") and chunk.endswith(">"):
+                normalized = self._normalize_token(chunk[1:-1])
+                if normalized:
+                    tokens.append(("key", normalized))
+            else:
+                tokens.append(("text", chunk))
+        return tokens
+
+    def _normalize_token(self, token: str) -> str:
+        cleaned = token.strip()
+        if not cleaned:
+            return ""
+        parts = [part.strip() for part in cleaned.replace("-", "+").split("+") if part.strip()]
+        if not parts:
+            return ""
+        normalized: List[str] = []
+        for part in parts:
+            key = SPECIAL_KEYS.get(part.upper(), part.lower())
+            normalized.append(key)
+        return "+".join(normalized)
+
+    # ------------------------------------------------------------------
+    # vncdotool helpers
+    # ------------------------------------------------------------------
+    def _vncdotool_command(self, command: str) -> None:
+        endpoint = f"{VNC_HOST}:{VNC_PORT}"
+        self.execute_command(f"vncdotool -s {shlex.quote(endpoint)} {command}")
+
+    def _vncdotool_type(self, text: str) -> None:
+        tokens = self._tokenize_input(text)
+        for token_type, payload in tokens:
+            if token_type == "text" and payload:
+                self._vncdotool_command(f"type {shlex.quote(payload)}")
+            elif token_type == "key" and payload:
+                self._vncdotool_command(f"key {shlex.quote(payload)}")

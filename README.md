@@ -38,12 +38,19 @@ VISIOS_OLLAMA_TEMPERATURE=0.1
 VISIOS_OLLAMA_TIMEOUT=120
 VISIOS_API_MODE=ollama  # ou "openai" pour LM Studio / API compatibles OpenAI
 VISIOS_OPENAI_ENDPOINT=responses  # valeurs possibles: responses, chat_completions, completions
+VISIOS_AGENT_MAX_STEPS=3
+VISIOS_ACTION_DELAY=1.0  # secondes entre chaque action de l'agent
+VISIOS_REPEAT_TOLERANCE=2  # nombre de répétitions identiques autorisées avant arrêt
+VISIOS_INPUT_BACKEND=xdotool  # ou "vncdotool"
+VISIOS_VNC_HOST=127.0.0.1
+VISIOS_VNC_PORT=5901
+Ajustez `VISIOS_AGENT_MAX_STEPS`, `VISIOS_ACTION_DELAY` et `VISIOS_REPEAT_TOLERANCE` pour contrôler le nombre d'actions consécutives effectuées par l'agent, le délai entre deux actions et le seuil avant de considérer que le modèle boucle.
 
 # Interface
 VISIOS_IFRAME_URL=http://localhost:6901/vnc.html
 ```
 
-Tous les paramètres sont optionnels : si une clé est absente, la valeur par défaut indiquée ci-dessus est utilisée. `VISIOS_API_MODE=openai` permet de cibler LM Studio ou toute API compatible OpenAI ; utilisez `VISIOS_OPENAI_ENDPOINT=chat_completions` pour les serveurs qui implémentent principalement `/v1/chat/completions` (comme LM Studio) ou `responses` pour l'API `/v1/responses`.
+Tous les paramètres sont optionnels : si une clé est absente, la valeur par défaut indiquée ci-dessus est utilisée. `VISIOS_API_MODE=openai` permet de cibler LM Studio ou toute API compatible OpenAI ; utilisez `VISIOS_OPENAI_ENDPOINT=chat_completions` pour les serveurs qui implémentent principalement `/v1/chat/completions` (comme LM Studio) ou `responses` pour l'API `/v1/responses`. Ajustez `VISIOS_AGENT_MAX_STEPS` et `VISIOS_ACTION_DELAY` pour contrôler le nombre d'actions consécutives effectuées par l'agent et le délai entre deux actions.
 
 ## Démarrage
 1. Lancez Streamlit :
@@ -74,4 +81,6 @@ Tous les paramètres sont optionnels : si une clé est absente, la valeur par d�
 ## Notes
 - Les captures d'écran nécessitent qu'au moins un des outils suivants soit présent dans l'image : `import` (ImageMagick), `xfce4-screenshooter` ou `xwd + convert`.
 - `xdotool` doit être disponible dans le conteneur (présent dans l'image cible).
+- Si vous préférez piloter l'affichage via `vncdotool`, définissez `VISIOS_INPUT_BACKEND=vncdotool` et exposez le serveur VNC (127.0.0.1:5901 par défaut).
 - Le système suppose que noVNC répond sur le port 6901 ; adaptez `host_vnc_port` dans `SandboxManager` si nécessaire.
+- Pour simuler des raccourcis clavier, incluez des tokens entre chevrons dans vos réponses (ex. `<CTRL+L>`, `<ENTER>`). Ils sont interprétés par l'agent et envoyés via `xdotool key` avant/après les chaînes tapées.

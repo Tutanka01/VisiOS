@@ -39,10 +39,16 @@ SYSTEM_PROMPT = (
     "You are visiOS, an accessibility agent.\n"
     "Given the attached desktop screenshot, decide the single next UI action "
     "needed to satisfy the user's request.\n"
+    "Think step-by-step: if text needs to be typed, first make sure the relevant field is focused (click or press <CTRL+L> for address bar) before typing.\n"
     "Respond using JSON with the following schema: {{"
-    "\"action\": \"click|type|noop\", "
+    "\"action\": \"click|type|scroll|noop\", "
     "\"coordinates\": {{\"x\": <number>, \"y\": <number>}}, "
-    "\"text\": \"optional text to type\" }}.\n"
+    "\"text\": \"optional text to type or special key tokens like <ENTER>, <CTRL+L>\" }}.\n"
+    "When you need to type text (URLs, queries, commands), set action to \"type\" and fill the text field.\n"
+    "Combine text with key tokens by embedding them inside angle brackets, e.g. 'example.com<ENTER>' or '<CTRL+L>https://site.com<ENTER>'.\n"
+    "When a click is required, provide coordinates relative to the screenshot.\n"
+    "Use action=\"scroll\" with text or y values to describe how far to scroll (positive for down, negative for up).\n"
+    "Focus on high-impact actions: open apps if they are not visible, bring windows to the front, then interact with the UI element that enables the user's request.\n"
     "Coordinates must be either pixels or within 0-1000.\n"
 )
 
@@ -58,10 +64,13 @@ class AgentAction:
     raw_response: str = ""
 
     def is_click(self) -> bool:
-        return self.action_type.lower() == "click"
+        return self._normalized_type() == "click"
 
     def is_type(self) -> bool:
-        return self.action_type.lower() == "type"
+        return self._normalized_type() == "type"
+
+    def _normalized_type(self) -> str:
+        return (self.action_type or "").strip().lower()
 
 
 class VisionAgent:
@@ -120,6 +129,13 @@ class VisionAgent:
 
     @staticmethod
     def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+        stripped = VisionAgent._sanitize_json_text(text)
+        if stripped:
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+
         candidate = None
         for match in re.finditer(r"\{.*?\}", text, re.DOTALL):
             candidate = match.group(0)
@@ -131,13 +147,50 @@ class VisionAgent:
             return None
 
     @staticmethod
+    def _sanitize_json_text(text: str) -> str:
+        stripped = text.strip()
+
+        if stripped.startswith("```"):
+            parts = stripped.split("```")
+            if len(parts) >= 3:
+                stripped = parts[1].strip()
+            else:
+                stripped = stripped.strip("`")
+
+        while stripped.startswith("{{") and stripped.endswith("}}"):  # handle double braces
+            stripped = stripped[1:-1].strip()
+
+        if stripped.startswith("{") and stripped.endswith("}"):
+            return stripped
+        return ""
+
+    @staticmethod
     def _from_json(payload: Dict[str, Any], raw_text: str) -> AgentAction:
         action = payload.get("action") or payload.get("type") or "noop"
-        coords = payload.get("coordinates") or {}
+        coords = payload.get("coordinates") or payload.get("coords") or {}
         text = payload.get("text") or payload.get("value")
-        x = coords.get("x") if isinstance(coords, dict) else payload.get("x")
-        y = coords.get("y") if isinstance(coords, dict) else payload.get("y")
+        x = y = None
+        if isinstance(coords, dict):
+            x = VisionAgent._to_number(coords.get("x") or coords.get("X"))
+            y = VisionAgent._to_number(coords.get("y") or coords.get("Y"))
+        elif isinstance(coords, (list, tuple)) and len(coords) >= 2:
+            x = VisionAgent._to_number(coords[0])
+            y = VisionAgent._to_number(coords[1])
+        else:
+            x = VisionAgent._to_number(payload.get("x"))
+            y = VisionAgent._to_number(payload.get("y"))
         return AgentAction(action_type=str(action), x=x, y=y, text=text, raw_response=raw_text)
+
+    @staticmethod
+    def _to_number(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # Backend adapters
