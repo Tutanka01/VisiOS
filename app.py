@@ -8,10 +8,10 @@ from typing import List
 import streamlit as st
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from backend.container_manager import SandboxManager
 from backend.vision_agent import AgentAction, VisionAgent
-
-load_dotenv()
 
 st.set_page_config(page_title="visiOS - Local Agent", layout="wide")
 

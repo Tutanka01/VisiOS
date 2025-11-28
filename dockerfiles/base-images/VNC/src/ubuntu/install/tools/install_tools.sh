@@ -9,7 +9,11 @@ apt-get install -y --no-install-recommends \
     curl \
     unzip \
     mousepad \
-    gnome-terminal
+    gnome-terminal \
+    xdotool \
+    imagemagick \
+    xfce4-screenshooter \
+    x11-apps
 
 # --- Installation de Firefox (Version .deb via PPA Mozilla Team) ---
 # Ubuntu 24.04 force l'installation via Snap par défaut, ce qui ne fonctionne pas bien dans Docker.

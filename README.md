@@ -36,12 +36,14 @@ VISIOS_OLLAMA_URL=http://localhost:11434
 VISIOS_OLLAMA_MODEL=qwen2.5-vl
 VISIOS_OLLAMA_TEMPERATURE=0.1
 VISIOS_OLLAMA_TIMEOUT=120
+VISIOS_API_MODE=ollama  # ou "openai" pour LM Studio / API compatibles OpenAI
+VISIOS_OPENAI_ENDPOINT=responses  # valeurs possibles: responses, chat_completions, completions
 
 # Interface
 VISIOS_IFRAME_URL=http://localhost:6901/vnc.html
 ```
 
-Tous les paramètres sont optionnels : si une clé est absente, la valeur par défaut indiquée ci-dessus est utilisée.
+Tous les paramètres sont optionnels : si une clé est absente, la valeur par défaut indiquée ci-dessus est utilisée. `VISIOS_API_MODE=openai` permet de cibler LM Studio ou toute API compatible OpenAI ; utilisez `VISIOS_OPENAI_ENDPOINT=chat_completions` pour les serveurs qui implémentent principalement `/v1/chat/completions` (comme LM Studio) ou `responses` pour l'API `/v1/responses`.
 
 ## Démarrage
 1. Lancez Streamlit :

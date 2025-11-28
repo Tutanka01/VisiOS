@@ -25,6 +25,13 @@ except ImportError:  # pragma: no cover
 LOGGER = logging.getLogger(__name__)
 
 
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, default))
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return default
+
+
 def _env_int(key: str, default: int) -> int:
     try:
         return int(os.getenv(key, default))
@@ -37,6 +44,8 @@ DEFAULT_NAME = os.getenv("VISIOS_SANDBOX_NAME", "visios-sandbox")
 DEFAULT_PORT = _env_int("VISIOS_SANDBOX_PORT", 6901)
 DEFAULT_WIDTH = _env_int("VISIOS_SANDBOX_WIDTH", 1600)
 DEFAULT_HEIGHT = _env_int("VISIOS_SANDBOX_HEIGHT", 900)
+MAX_SCREENSHOT_RETRIES = _env_int("VISIOS_SCREENSHOT_RETRIES", 5)
+SCREENSHOT_RETRY_DELAY = _env_float("VISIOS_SCREENSHOT_RETRY_DELAY", 2.0)
 
 
 class SandboxManager:
@@ -145,11 +154,32 @@ class SandboxManager:
             "elif command -v xwd >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then DISPLAY=:0 xwd -root -silent | convert xwd:- png:-; "
             "else exit 1; fi'"
         )
-        result = container.exec_run(capture_cmd)
-        if result.exit_code != 0:
-            raise RuntimeError(f"Screenshot command failed: {result.stderr.decode('utf-8', 'ignore')}")
+        last_error: Optional[str] = None
+        img_bytes: bytes = b""
+        for attempt in range(1, MAX_SCREENSHOT_RETRIES + 1):
+            result = container.exec_run(capture_cmd, demux=True)
+            stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, None)
 
-        img_bytes: bytes = result.output if result.output else b""
+            if result.exit_code == 0 and stdout:
+                img_bytes = stdout
+                break
+
+            error_msg = (stderr or stdout or b"").decode("utf-8", "ignore").strip()
+            last_error = error_msg or f"exit_code={result.exit_code}"
+            LOGGER.warning(
+                "Screenshot attempt %s/%s failed (exit_code=%s): %s",
+                attempt,
+                MAX_SCREENSHOT_RETRIES,
+                result.exit_code,
+                last_error,
+            )
+            if attempt < MAX_SCREENSHOT_RETRIES:
+                time.sleep(SCREENSHOT_RETRY_DELAY)
+        else:  # pragma: no cover - only hit when loop never breaks
+            raise RuntimeError(f"Screenshot command failed after retries: {last_error}")
+
+        if not img_bytes:
+            raise RuntimeError("Screenshot command produced no data despite successful exit")
         width, height = self.screen_size
         if Image is not None and img_bytes:
             with Image.open(io.BytesIO(img_bytes)) as img:
@@ -166,10 +196,11 @@ class SandboxManager:
         container = self._require_container()
         exec_cmd = f"bash -lc {shlex.quote(cmd)}"
         LOGGER.debug("Executing in container: %s", exec_cmd)
-        result = container.exec_run(exec_cmd)
+        result = container.exec_run(exec_cmd, demux=True)
+        stdout, stderr = result.output if isinstance(result.output, tuple) else (result.output, None)
         if result.exit_code != 0:
-            raise RuntimeError(result.stderr.decode("utf-8", "ignore"))
-        return result.output.decode("utf-8", "ignore")
+            raise RuntimeError((stderr or stdout or b"").decode("utf-8", "ignore"))
+        return (stdout or b"").decode("utf-8", "ignore")
 
     # ------------------------------------------------------------------
     # Convenience helpers for pointer/keyboard interactions
