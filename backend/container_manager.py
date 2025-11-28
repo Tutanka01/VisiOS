@@ -72,6 +72,8 @@ SCREENSHOT_RETRY_DELAY = _env_float("VISIOS_SCREENSHOT_RETRY_DELAY", 2.0)
 SCROLL_DEFAULT_MAGNITUDE = 5.0
 SCROLL_MIN_STEPS = 1
 SCROLL_MAX_STEPS = 30
+SCROLL_SMALL_SCALE = 0.5
+SCROLL_LARGE_SCALE = 2.0
 SCROLL_UP_TOKENS = (
     "up",
     "haut",
@@ -261,7 +263,7 @@ class SandboxManager:
     # ------------------------------------------------------------------
     # Convenience helpers for pointer/keyboard interactions
     # ------------------------------------------------------------------
-    def send_click(self, x: float, y: float, absolute: bool = False) -> None:
+    def send_click(self, x: float, y: float, absolute: bool = False) -> Tuple[int, int]:
         """Click at the provided coordinates using xdotool."""
 
         target_x, target_y = self._coerce_coordinates(x, y, absolute)
@@ -275,6 +277,18 @@ class SandboxManager:
                 "xdotool click --clearmodifiers 1"
             )
             self.execute_command(cmd)
+        return target_x, target_y
+
+    def move_pointer(self, x: float, y: float, absolute: bool = False) -> Tuple[int, int]:
+        """Move the mouse pointer without clicking and return the effective coordinates."""
+
+        target_x, target_y = self._coerce_coordinates(x, y, absolute)
+        target_x, target_y = self._clamp_to_screen(target_x, target_y)
+        if self.input_backend == "vncdotool":
+            self._vncdotool_command(f"move {target_x} {target_y}")
+        else:
+            self.execute_command(f"xdotool mousemove --sync {target_x} {target_y}")
+        return target_x, target_y
 
     def send_text(self, text: str) -> None:
         """Type arbitrary text inside the sandbox."""
@@ -418,11 +432,13 @@ class SandboxManager:
     ) -> Tuple[int, int]:
         direction = 0
         magnitude = 0.0
+        magnitude_source = "none"
         if delta_lines is not None:
             try:
                 magnitude = abs(float(delta_lines))
                 if magnitude > 0:
                     direction = 1 if float(delta_lines) > 0 else -1
+                    magnitude_source = "delta"
             except (TypeError, ValueError):
                 magnitude = 0.0
 
@@ -431,9 +447,12 @@ class SandboxManager:
             direction = hint_direction
 
         if magnitude == 0.0:
-            magnitude = self._parse_scroll_magnitude_hint(hint)
+            magnitude, magnitude_source = self._parse_scroll_magnitude_hint(hint)
         if magnitude == 0.0:
             magnitude = SCROLL_DEFAULT_MAGNITUDE
+            magnitude_source = "default"
+
+        magnitude = self._apply_scroll_hint_scaling(magnitude, hint, magnitude_source)
 
         steps = self._scale_scroll_magnitude(magnitude)
         if steps == 0:
@@ -452,23 +471,37 @@ class SandboxManager:
                 return 1
         return 0
 
-    def _parse_scroll_magnitude_hint(self, hint: Optional[str]) -> float:
+    def _parse_scroll_magnitude_hint(self, hint: Optional[str]) -> Tuple[float, str]:
         if not hint:
-            return 0.0
+            return 0.0, "none"
         lowered = hint.lower()
+        number_match = re.search(r"(-?\d+(?:\.\d+)?)", lowered)
+        if number_match:
+            try:
+                value = abs(float(number_match.group(1)))
+                return value, "hint-number"
+            except ValueError:
+                pass
         for token in SCROLL_LARGE_TOKENS:
             if token in lowered:
-                return 18.0
+                return 18.0, "hint-large"
         for token in SCROLL_SMALL_TOKENS:
             if token in lowered:
-                return 3.0
-        match = re.search(r"(-?\d+(?:\.\d+)?)", hint)
-        if match:
-            try:
-                return abs(float(match.group(1)))
-            except ValueError:
-                return 0.0
-        return 0.0
+                return 3.0, "hint-small"
+        return 0.0, "none"
+
+    def _apply_scroll_hint_scaling(self, magnitude: float, hint: Optional[str], source: str) -> float:
+        if magnitude <= 0 or not hint:
+            return magnitude
+        if source not in {"delta", "hint-number"}:
+            return magnitude
+        lowered = hint.lower()
+        multiplier = 1.0
+        if any(token in lowered for token in SCROLL_SMALL_TOKENS):
+            multiplier *= SCROLL_SMALL_SCALE
+        if any(token in lowered for token in SCROLL_LARGE_TOKENS):
+            multiplier *= SCROLL_LARGE_SCALE
+        return max(magnitude * multiplier, 0.1)
 
     def _scale_scroll_magnitude(self, magnitude: float) -> int:
         if magnitude <= 0:

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -33,6 +34,10 @@ def _init_state() -> None:
         st.session_state.trace = []
     if "latest_screenshot" not in st.session_state:
         st.session_state.latest_screenshot = None
+    if "pointer" not in st.session_state:
+        st.session_state.pointer: Optional[Tuple[int, int]] = None
+    if "screen_size" not in st.session_state:
+        st.session_state.screen_size: Optional[Tuple[int, int]] = None
 
 
 def log(message: str) -> None:
@@ -49,6 +54,34 @@ def push_trace(step: int, action: AgentAction, screenshot: Optional[bytes]) -> N
         }
     )
     st.session_state.trace = st.session_state.trace[-10:]
+
+
+def _update_pointer(coords: Optional[Tuple[int, int]]) -> None:
+    st.session_state.pointer = coords
+
+
+def _current_pointer() -> Optional[Tuple[int, int]]:
+    return st.session_state.pointer
+
+
+def _extract_number(text: Optional[str]) -> Optional[float]:
+    if not text:
+        return None
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _display_text(value: Optional[Union[str, int, float]]) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 _init_state()
@@ -85,7 +118,7 @@ with col2:
         st.markdown(
             f"**Step {entry['step']}** — `{action.action_type}` "
             f"{(action.x, action.y) if action.x is not None and action.y is not None else ''} "
-            f"{action.text or ''}"
+            f"{_display_text(action.text)}"
         )
         if action.reasoning:
             st.caption(action.reasoning)
@@ -102,10 +135,11 @@ if user_prompt:
 
     for step in range(1, MAX_AGENT_STEPS + 1):
         log(f"Step {step}/{MAX_AGENT_STEPS}: capturing screenshot")
-        screenshot, _size = sandbox.get_screenshot()
+        screenshot, screen_size = sandbox.get_screenshot()
         st.session_state.latest_screenshot = screenshot
+        st.session_state.screen_size = screen_size
 
-        action: AgentAction = vision.decide_action(screenshot, user_prompt)
+        action: AgentAction = vision.decide_action(screenshot, user_prompt, screen_size=screen_size)
         if action.reasoning:
             log(f"Model reasoning: {action.reasoning}")
         log(f"Model (step {step}): {action.raw_response}")
@@ -115,7 +149,7 @@ if user_prompt:
             action.action_type.lower(),
             round(action.x, 2) if action.x is not None else None,
             round(action.y, 2) if action.y is not None else None,
-            action.text.strip() if action.text else "",
+            _display_text(action.text).strip(),
         )
         if signature == last_signature:
             repeat_count += 1
@@ -127,23 +161,51 @@ if user_prompt:
         else:
             repeat_count = 0
 
-        action_kind = (action.action_type or "").strip().lower()
+        action_kind = action._normalized_type()
         executed = False
         if action_kind == "click" and action.x is not None and action.y is not None:
-            sandbox.send_click(action.x, action.y)
-            log(f"Click @ ({action.x}, {action.y})")
+            actual_x, actual_y = sandbox.send_click(action.x, action.y)
+            _update_pointer((actual_x, actual_y))
+            log(f"Click @ ({actual_x}, {actual_y})")
             executed = True
         elif action_kind == "type" and action.text:
             if action.x is not None and action.y is not None:
-                sandbox.send_click(action.x, action.y)
-                log(f"(focus) Click @ ({action.x}, {action.y}) before typing")
+                focus_x, focus_y = sandbox.send_click(action.x, action.y)
+                _update_pointer((focus_x, focus_y))
+                log(f"(focus) Click @ ({focus_x}, {focus_y}) before typing")
                 time.sleep(0.3)
             sandbox.send_text(action.text)
             log(f"Typed: {action.text}")
             executed = True
         elif action_kind == "scroll":
-            if sandbox.send_scroll(action.y, action.text):
-                log(f"Scroll request value={action.y} hint={action.text}")
+            hint_chunks = [chunk for chunk in [action.action_type, _display_text(action.text)] if chunk]
+            hint = " ".join(hint_chunks) or None
+            anchor: Optional[Tuple[int, int]] = None
+            pointer_coords = action.pointer()
+            current_pointer = _current_pointer()
+            if pointer_coords:
+                pointer_x, pointer_y = pointer_coords
+                anchor = sandbox.move_pointer(pointer_x, pointer_y)
+            elif current_pointer:
+                pointer_x, pointer_y = current_pointer
+                anchor = sandbox.move_pointer(pointer_x, pointer_y, absolute=True)
+            elif st.session_state.screen_size:
+                width, height = st.session_state.screen_size
+                anchor = sandbox.move_pointer(width / 2, height / 2, absolute=True)
+            if anchor:
+                _update_pointer(anchor)
+
+            scroll_value = action.scroll_amount
+            if scroll_value is None and action.x is None and action.y is not None:
+                scroll_value = action.y
+            if scroll_value is None:
+                scroll_value = _extract_number(action.text)
+
+            if sandbox.send_scroll(scroll_value, hint):
+                anchor_label = anchor or current_pointer
+                log(
+                    f"Scroll @ {anchor_label if anchor_label else '(unspecified)'} value={scroll_value} hint={hint}"
+                )
                 executed = True
             else:
                 log("Scroll request ignored (missing magnitude)")

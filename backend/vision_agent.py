@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -35,6 +36,32 @@ DEFAULT_TIMEOUT = _env_int("VISIOS_OLLAMA_TIMEOUT", 120)
 DEFAULT_API_MODE = os.getenv("VISIOS_API_MODE", "ollama").lower()
 DEFAULT_OPENAI_ENDPOINT = os.getenv("VISIOS_OPENAI_ENDPOINT", "responses").lower()
 
+NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "un": 1,
+    "une": 1,
+    "deux": 2,
+    "trois": 3,
+    "quatre": 4,
+    "cinq": 5,
+    "six": 6,
+    "sept": 7,
+    "huit": 8,
+    "neuf": 9,
+    "dix": 10,
+    "petit": 1,  # fallback to avoid returning 0 when parsing phrases
+}
+
 SYSTEM_PROMPT = (
     "You are visiOS, an accessibility agent.\n"
     "Given the attached desktop screenshot, decide the single next UI action "
@@ -63,6 +90,7 @@ class AgentAction:
     text: Optional[str] = None
     raw_response: str = ""
     reasoning: Optional[str] = None
+    scroll_amount: Optional[float] = None
 
     def is_click(self) -> bool:
         return self._normalized_type() == "click"
@@ -71,7 +99,20 @@ class AgentAction:
         return self._normalized_type() == "type"
 
     def _normalized_type(self) -> str:
-        return (self.action_type or "").strip().lower()
+        raw = (self.action_type or "").strip().lower()
+        if not raw:
+            return ""
+        normalized = raw.replace("-", "_")
+        if normalized in {"tap", "press"}:
+            return "click"
+        if normalized.startswith("scroll") or normalized in {"wheel", "mousewheel"}:
+            return "scroll"
+        return normalized
+
+    def pointer(self) -> Optional[Tuple[float, float]]:
+        if self.x is None or self.y is None:
+            return None
+        return self.x, self.y
 
 
 class VisionAgent:
@@ -93,16 +134,22 @@ class VisionAgent:
         self.api_mode = api_mode.lower()
         self.openai_endpoint = openai_endpoint.lower()
 
-    def decide_action(self, screenshot: bytes, user_prompt: str) -> AgentAction:
-        """Send the screenshot + prompt to Ollama and parse the textual response."""
+    def decide_action(
+        self,
+        screenshot: bytes,
+        user_prompt: str,
+        screen_size: Optional[Tuple[int, int]] = None,
+    ) -> AgentAction:
+        """Send the screenshot + prompt to the backend and parse the textual response."""
 
         LOGGER.info("Querying %s backend with %s bytes of image data", self.api_mode, len(screenshot))
         encoded_image = base64.b64encode(screenshot).decode("ascii")
+        prompt = self._build_prompt(user_prompt, screen_size)
 
         if self.api_mode == "openai":
-            full_text, backend_reasoning = self._call_openai_api(encoded_image, user_prompt)
+            full_text, backend_reasoning = self._call_openai_api(encoded_image, prompt, user_prompt)
         else:
-            full_text, backend_reasoning = self._call_ollama_api(encoded_image, user_prompt)
+            full_text, backend_reasoning = self._call_ollama_api(encoded_image, prompt)
 
         cleaned_text, inline_reasoning = self._strip_reasoning_sections(full_text)
 
@@ -112,8 +159,29 @@ class VisionAgent:
         return action
 
     # ------------------------------------------------------------------
-    def _build_prompt(self, user_prompt: str) -> str:
-        return f"{SYSTEM_PROMPT}User request: {user_prompt}\n"
+    def _build_prompt(self, user_prompt: str, screen_size: Optional[Tuple[int, int]]) -> str:
+        extra = []
+        if screen_size and all(isinstance(value, (int, float)) and value > 0 for value in screen_size):
+            width, height = screen_size
+            extra.append(
+                f"Current display resolution is {int(width)}x{int(height)} pixels. "
+                "Return click coordinates in that pixel space (or normalized 0-1000 scale)."
+            )
+        else:
+            extra.append(
+                "When providing coordinates, assume the screenshot resolution and send either pixels or a 0-1000 normalized scale."
+            )
+        extra.append(
+            "Prefer returning absolute pixels for precision. Only emit one action per response."
+        )
+        extra.append(
+            "For scroll actions, always include the cursor coordinates where the wheel must occur and a numeric magnitude (positive = down, negative = up)."
+        )
+        extra.append(
+            "Map qualitative hints to numbers: small/petit/doucement -> 1 to 3, medium -> 4 to 7, large/gros/rapidement -> 8 to 15, and respect explicit counts like 'trois scrolls' by multiplying the magnitude accordingly."
+        )
+        supplemental = " ".join(extra)
+        return f"{SYSTEM_PROMPT}{supplemental}\nUser request: {user_prompt}\n"
 
     def _parse_action(self, model_text: str) -> AgentAction:
         """Best-effort extraction of coordinates/text from model output."""
@@ -126,12 +194,15 @@ class VisionAgent:
             reasoning_parts.extend(self._extract_reasoning_fields(json_blob))
             action = self._from_json(json_blob, model_text)
         else:
-            match = re.search(r"click.*?(\d+)\D+(\d+)", model_text, re.IGNORECASE)
+            match = re.search(r"click.*?(\d+)\D+(\d+)", model_text, re.IGNORECASE | re.DOTALL)
             if match:
                 action = AgentAction(action_type="click", x=float(match.group(1)), y=float(match.group(2)), raw_response=model_text)
             elif "type" in model_text.lower():
                 text_match = re.search(r"type[:\s]+(.+)$", model_text, re.IGNORECASE)
                 action = AgentAction(action_type="type", text=text_match.group(1).strip() if text_match else "", raw_response=model_text)
+            elif "scroll" in model_text.lower():
+                amount = self._extract_numeric_from_text(model_text)
+                action = AgentAction(action_type="scroll", text=model_text, raw_response=model_text, scroll_amount=amount)
         if reasoning_parts:
             action.reasoning = self._merge_reasoning_segments(action.reasoning, *reasoning_parts)
         return action
@@ -143,7 +214,12 @@ class VisionAgent:
             try:
                 return json.loads(stripped)
             except json.JSONDecodeError:
-                pass
+                loosened = VisionAgent._loosen_braces(stripped)
+                if loosened != stripped:
+                    try:
+                        return json.loads(loosened)
+                    except json.JSONDecodeError:
+                        pass
 
         candidate = None
         for match in re.finditer(r"\{.*?\}", text, re.DOTALL):
@@ -153,6 +229,12 @@ class VisionAgent:
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
+            loosened = VisionAgent._loosen_braces(candidate)
+            if loosened != candidate:
+                try:
+                    return json.loads(loosened)
+                except json.JSONDecodeError:
+                    return None
             return None
 
     @staticmethod
@@ -174,6 +256,12 @@ class VisionAgent:
         return ""
 
     @staticmethod
+    def _loosen_braces(text: str) -> str:
+        if "{{" not in text and "}}" not in text:
+            return text
+        return text.replace("{{", "{").replace("}}", "}")
+
+    @staticmethod
     def _from_json(payload: Dict[str, Any], raw_text: str) -> AgentAction:
         action = payload.get("action") or payload.get("type") or "noop"
         coords = payload.get("coordinates") or payload.get("coords") or {}
@@ -188,7 +276,68 @@ class VisionAgent:
         else:
             x = VisionAgent._to_number(payload.get("x"))
             y = VisionAgent._to_number(payload.get("y"))
-        return AgentAction(action_type=str(action), x=x, y=y, text=text, raw_response=raw_text)
+        scroll_amount = VisionAgent._extract_scroll_amount(payload, text)
+        return AgentAction(
+            action_type=str(action),
+            x=x,
+            y=y,
+            text=text,
+            raw_response=raw_text,
+            scroll_amount=scroll_amount,
+        )
+
+    @staticmethod
+    def _extract_scroll_amount(payload: Dict[str, Any], text: Optional[str]) -> Optional[float]:
+        candidates = []
+        for key in ("scroll", "delta", "amount", "value", "distance", "lines", "magnitude"):
+            if key in payload:
+                candidates.append(payload[key])
+        coords = payload.get("coordinates") or payload.get("coords")
+        if isinstance(coords, dict):
+            for key in ("delta", "amount"):
+                if key in coords:
+                    candidates.append(coords[key])
+        meta = payload.get("meta") or payload.get("metadata")
+        if isinstance(meta, dict):
+            for key in ("scroll", "delta", "amount"):
+                if key in meta:
+                    candidates.append(meta[key])
+        for candidate in candidates:
+            number = VisionAgent._to_number(candidate)
+            if number is not None:
+                return number
+        return VisionAgent._extract_numeric_from_text(text)
+
+    @staticmethod
+    def _extract_numeric_from_text(text: Optional[str]) -> Optional[float]:
+        if not text:
+            return None
+        if isinstance(text, (int, float)):
+            return float(text)
+        if not isinstance(text, str):
+            text = str(text)
+        match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+        if not match:
+            return VisionAgent._word_to_number(text)
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _word_to_number(text: str) -> Optional[float]:
+        lowered = text.lower()
+        tokens = re.findall(r"[a-zàâçéèêëîïôûùüÿñæœ]+", lowered)
+        for token in tokens:
+            normalized = VisionAgent._strip_accents(token)
+            if normalized in NUMBER_WORDS:
+                return float(NUMBER_WORDS[normalized])
+        return None
+
+    @staticmethod
+    def _strip_accents(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value)
+        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
 
     @staticmethod
     def _to_number(value: Any) -> Optional[float]:
@@ -209,10 +358,10 @@ class VisionAgent:
         cleaned_path = path.strip("/")
         return f"{cleaned_base}/{cleaned_path}" if cleaned_path else cleaned_base
 
-    def _call_ollama_api(self, encoded_image: str, user_prompt: str) -> Tuple[str, Optional[str]]:
+    def _call_ollama_api(self, encoded_image: str, prompt: str) -> Tuple[str, Optional[str]]:
         payload: Dict[str, Any] = {
             "model": self.model,
-            "prompt": self._build_prompt(user_prompt),
+            "prompt": prompt,
             "images": [encoded_image],
             "stream": True,
             "options": {"temperature": self.temperature},
@@ -231,22 +380,32 @@ class VisionAgent:
                 break
         return "".join(collected).strip(), None
 
-    def _call_openai_api(self, encoded_image: str, user_prompt: str) -> Tuple[str, Optional[str]]:
+    def _call_openai_api(
+        self,
+        encoded_image: str,
+        prompt: str,
+        user_prompt: str,
+    ) -> Tuple[str, Optional[str]]:
         if self.openai_endpoint in {"chat", "chat_completions", "v1/chat/completions"}:
-            return self._call_openai_chat(encoded_image, user_prompt)
+            return self._call_openai_chat(encoded_image, prompt, user_prompt)
 
         if self.openai_endpoint in {"completions", "completion", "v1/completions"}:
-            return self._call_openai_completion(encoded_image, user_prompt)
+            return self._call_openai_completion(encoded_image, prompt, user_prompt)
 
-        return self._call_openai_responses(encoded_image, user_prompt)
+        return self._call_openai_responses(encoded_image, prompt, user_prompt)
 
-    def _call_openai_responses(self, encoded_image: str, user_prompt: str) -> Tuple[str, Optional[str]]:
+    def _call_openai_responses(
+        self,
+        encoded_image: str,
+        prompt: str,
+        user_prompt: str,
+    ) -> Tuple[str, Optional[str]]:
         payload: Dict[str, Any] = {
             "model": self.model,
             "input": [
                 {
                     "role": "system",
-                    "content": [{"type": "input_text", "text": SYSTEM_PROMPT.strip()}],
+                    "content": [{"type": "input_text", "text": prompt.strip()}],
                 },
                 {
                     "role": "user",
@@ -268,13 +427,18 @@ class VisionAgent:
         LOGGER.warning("Unable to parse OpenAI responses payload: %s", json.dumps(data)[:500])
         return "", reasoning
 
-    def _call_openai_chat(self, encoded_image: str, user_prompt: str) -> Tuple[str, Optional[str]]:
+    def _call_openai_chat(
+        self,
+        encoded_image: str,
+        prompt: str,
+        user_prompt: str,
+    ) -> Tuple[str, Optional[str]]:
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": SYSTEM_PROMPT.strip()}],
+                    "content": [{"type": "text", "text": prompt.strip()}],
                 },
                 {
                     "role": "user",
@@ -299,15 +463,20 @@ class VisionAgent:
         LOGGER.warning("Unable to parse OpenAI chat payload: %s", json.dumps(data)[:500])
         return "", reasoning
 
-    def _call_openai_completion(self, encoded_image: str, user_prompt: str) -> Tuple[str, Optional[str]]:
-        prompt = (
-            f"{SYSTEM_PROMPT}User request: {user_prompt}\n"
+    def _call_openai_completion(
+        self,
+        encoded_image: str,
+        prompt: str,
+        user_prompt: str,
+    ) -> Tuple[str, Optional[str]]:
+        composed_prompt = (
+            f"{prompt}"  # already includes System + user prompt introduction
             "Image (base64 PNG) follows between <image></image> tags.\n"
             f"<image>{encoded_image}</image>"
         )
         payload: Dict[str, Any] = {
             "model": self.model,
-            "prompt": prompt,
+            "prompt": composed_prompt,
             "temperature": self.temperature,
         }
         url = self._endpoint("v1/completions")
