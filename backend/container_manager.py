@@ -69,6 +69,36 @@ VNC_HOST = os.getenv("VISIOS_VNC_HOST", "127.0.0.1")
 VNC_PORT = _env_int("VISIOS_VNC_PORT", 5901)
 MAX_SCREENSHOT_RETRIES = _env_int("VISIOS_SCREENSHOT_RETRIES", 5)
 SCREENSHOT_RETRY_DELAY = _env_float("VISIOS_SCREENSHOT_RETRY_DELAY", 2.0)
+SCROLL_DEFAULT_MAGNITUDE = 5.0
+SCROLL_MIN_STEPS = 1
+SCROLL_MAX_STEPS = 30
+SCROLL_UP_TOKENS = (
+    "up",
+    "haut",
+    "vers le haut",
+    "monte",
+    "scroll up",
+)
+SCROLL_DOWN_TOKENS = (
+    "down",
+    "bas",
+    "vers le bas",
+    "descend",
+    "scroll down",
+)
+SCROLL_SMALL_TOKENS = (
+    "small",
+    "petit",
+    "slight",
+    "peu",
+)
+SCROLL_LARGE_TOKENS = (
+    "page",
+    "large",
+    "big",
+    "grand",
+    "beaucoup",
+)
 
 
 class SandboxManager:
@@ -113,6 +143,7 @@ class SandboxManager:
                 LOGGER.info("Starting existing container %s", self.container_name)
                 container.start()
             self.container = container
+            self._refresh_display_geometry()
             return container
         except NotFound:
             LOGGER.info("Creating container %s from %s", self.container_name, self.image)
@@ -136,6 +167,7 @@ class SandboxManager:
         # Give the VNC stack a short moment to boot before returning control.
         time.sleep(5)
         self.container = container
+        self._refresh_display_geometry()
         return container
 
     def stop_container(self) -> None:
@@ -208,7 +240,7 @@ class SandboxManager:
         if Image is not None and img_bytes:
             with Image.open(io.BytesIO(img_bytes)) as img:
                 width, height = img.size
-                self.screen_size = (width, height)
+        self._update_screen_size(width, height)
         return img_bytes, (width, height)
 
     def execute_command(self, cmd: str) -> str:
@@ -233,11 +265,16 @@ class SandboxManager:
         """Click at the provided coordinates using xdotool."""
 
         target_x, target_y = self._coerce_coordinates(x, y, absolute)
+        target_x, target_y = self._clamp_to_screen(target_x, target_y)
         if self.input_backend == "vncdotool":
             self._vncdotool_command(f"move {target_x} {target_y}")
             self._vncdotool_command("click 1")
         else:
-            self.execute_command(f"xdotool mousemove {target_x} {target_y} click 1")
+            cmd = (
+                f"xdotool mousemove --sync {target_x} {target_y} && "
+                "xdotool click --clearmodifiers 1"
+            )
+            self.execute_command(cmd)
 
     def send_text(self, text: str) -> None:
         """Type arbitrary text inside the sandbox."""
@@ -255,19 +292,20 @@ class SandboxManager:
             elif token_type == "key" and payload:
                 self.execute_command(f"xdotool key --clearmodifiers {shlex.quote(payload)}")
 
-    def send_scroll(self, delta_lines: float) -> None:
-        """Scroll vertically; positive = down, negative = up."""
+    def send_scroll(self, delta_lines: Optional[float], hint: Optional[str] = None) -> bool:
+        """Scroll vertically using mouse wheel events."""
 
-        clicks = int(delta_lines)
-        if clicks == 0:
-            return
-        direction = "Down" if clicks > 0 else "Up"
-        repeat = abs(clicks)
+        direction, repeat = self._normalize_scroll_request(delta_lines, hint)
+        if repeat == 0:
+            LOGGER.debug("Ignoring scroll request with no magnitude (delta=%s, hint=%s)", delta_lines, hint)
+            return False
+        button = 5 if direction > 0 else 4
         if self.input_backend == "vncdotool":
             for _ in range(repeat):
-                self._vncdotool_command(f"key {direction}")
+                self._vncdotool_command(f"click {button}")
         else:
-            self.execute_command(f"xdotool key --repeat {repeat} --delay 50 {direction}")
+            self.execute_command(f"xdotool click --repeat {repeat} --delay 35 {button}")
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -275,7 +313,7 @@ class SandboxManager:
     def _coerce_coordinates(self, x: float, y: float, absolute: bool) -> Tuple[int, int]:
         """Convert relative coordinates into actual pixels."""
 
-        width, height = self.screen_size
+        width, height = self._ensure_screen_size()
         if absolute:
             return int(x), int(y)
 
@@ -287,6 +325,38 @@ class SandboxManager:
 
         # Fallback: assume already in pixels
         return int(x), int(y)
+
+    def _clamp_to_screen(self, x: int, y: int) -> Tuple[int, int]:
+        width, height = self._ensure_screen_size()
+        if width <= 0 or height <= 0:
+            return x, y
+        clamped_x = max(0, min(width - 1, x))
+        clamped_y = max(0, min(height - 1, y))
+        return clamped_x, clamped_y
+
+    def _ensure_screen_size(self) -> Tuple[int, int]:
+        width, height = self.screen_size
+        if width > 0 and height > 0:
+            return width, height
+        return self._refresh_display_geometry()
+
+    def _refresh_display_geometry(self) -> Tuple[int, int]:
+        try:
+            output = self.execute_command("xdotool getdisplaygeometry").strip()
+            parts = output.split()
+            if len(parts) >= 2:
+                width, height = int(parts[0]), int(parts[1])
+                self._update_screen_size(width, height)
+        except Exception as exc:  # pragma: no cover - depends on container tools
+            LOGGER.debug("Unable to refresh display geometry: %s", exc)
+        return self.screen_size
+
+    def _update_screen_size(self, width: int, height: int) -> None:
+        if width <= 0 or height <= 0:
+            return
+        if (width, height) != self.screen_size:
+            LOGGER.info("Detected display geometry change: from %s to %s", self.screen_size, (width, height))
+        self.screen_size = (width, height)
 
     def _require_container(self) -> Container:
         if self.container is None:
@@ -339,3 +409,77 @@ class SandboxManager:
                 self._vncdotool_command(f"type {shlex.quote(payload)}")
             elif token_type == "key" and payload:
                 self._vncdotool_command(f"key {shlex.quote(payload)}")
+
+    # ------------------------------------------------------------------
+    # Scroll helpers
+    # ------------------------------------------------------------------
+    def _normalize_scroll_request(
+        self, delta_lines: Optional[float], hint: Optional[str]
+    ) -> Tuple[int, int]:
+        direction = 0
+        magnitude = 0.0
+        if delta_lines is not None:
+            try:
+                magnitude = abs(float(delta_lines))
+                if magnitude > 0:
+                    direction = 1 if float(delta_lines) > 0 else -1
+            except (TypeError, ValueError):
+                magnitude = 0.0
+
+        hint_direction = self._parse_scroll_direction_hint(hint)
+        if direction == 0 and hint_direction != 0:
+            direction = hint_direction
+
+        if magnitude == 0.0:
+            magnitude = self._parse_scroll_magnitude_hint(hint)
+        if magnitude == 0.0:
+            magnitude = SCROLL_DEFAULT_MAGNITUDE
+
+        steps = self._scale_scroll_magnitude(magnitude)
+        if steps == 0:
+            return direction or 0, 0
+        return (direction or 1), steps
+
+    def _parse_scroll_direction_hint(self, hint: Optional[str]) -> int:
+        if not hint:
+            return 0
+        lowered = hint.lower()
+        for token in SCROLL_UP_TOKENS:
+            if token in lowered:
+                return -1
+        for token in SCROLL_DOWN_TOKENS:
+            if token in lowered:
+                return 1
+        return 0
+
+    def _parse_scroll_magnitude_hint(self, hint: Optional[str]) -> float:
+        if not hint:
+            return 0.0
+        lowered = hint.lower()
+        for token in SCROLL_LARGE_TOKENS:
+            if token in lowered:
+                return 18.0
+        for token in SCROLL_SMALL_TOKENS:
+            if token in lowered:
+                return 3.0
+        match = re.search(r"(-?\d+(?:\.\d+)?)", hint)
+        if match:
+            try:
+                return abs(float(match.group(1)))
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _scale_scroll_magnitude(self, magnitude: float) -> int:
+        if magnitude <= 0:
+            return 0
+        if magnitude <= 1:
+            steps = int(round(magnitude * 6))
+        elif magnitude <= 5:
+            steps = int(round(magnitude * 2))
+        elif magnitude <= 100:
+            steps = int(round(magnitude / 4))
+        else:
+            steps = SCROLL_MAX_STEPS
+        steps = max(SCROLL_MIN_STEPS, steps)
+        return min(steps, SCROLL_MAX_STEPS)

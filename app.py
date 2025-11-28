@@ -137,10 +137,12 @@ if user_prompt:
             sandbox.send_text(action.text)
             log(f"Typed: {action.text}")
             executed = True
-        elif action_kind == "scroll" and action.y is not None:
-            sandbox.send_scroll(action.y)
-            log(f"Scrolled by {action.y}")
-            executed = True
+        elif action_kind == "scroll":
+            if sandbox.send_scroll(action.y, action.text):
+                log(f"Scroll request value={action.y} hint={action.text}")
+                executed = True
+            else:
+                log("Scroll request ignored (missing magnitude)")
         else:
             log("No actionable command returned; stopping loop.")
             break

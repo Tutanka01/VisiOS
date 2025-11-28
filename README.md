@@ -82,5 +82,7 @@ Tous les paramètres sont optionnels : si une clé est absente, la valeur par d�
 - Les captures d'écran nécessitent qu'au moins un des outils suivants soit présent dans l'image : `import` (ImageMagick), `xfce4-screenshooter` ou `xwd + convert`.
 - `xdotool` doit être disponible dans le conteneur (présent dans l'image cible).
 - Si vous préférez piloter l'affichage via `vncdotool`, définissez `VISIOS_INPUT_BACKEND=vncdotool` et exposez le serveur VNC (127.0.0.1:5901 par défaut).
+- Les clics sont recalibrés à chaque action via `xdotool getdisplaygeometry`, puis clampés à la surface détectée afin d'éviter les décalages lorsque la résolution change à chaud.
+- Les actions `scroll` produisent désormais des événements de molette (boutons 4/5) et interprètent la valeur de `coordinates.y` ainsi que les indications textuelles (`scroll down`, `vers le haut`, `page down`, etc.) pour ajuster sens et intensité.
 - Le système suppose que noVNC répond sur le port 6901 ; adaptez `host_vnc_port` dans `SandboxManager` si nécessaire.
 - Pour simuler des raccourcis clavier, incluez des tokens entre chevrons dans vos réponses (ex. `<CTRL+L>`, `<ENTER>`). Ils sont interprétés par l'agent et envoyés via `xdotool key` avant/après les chaînes tapées.
