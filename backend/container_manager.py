@@ -72,8 +72,10 @@ SCREENSHOT_RETRY_DELAY = _env_float("VISIOS_SCREENSHOT_RETRY_DELAY", 2.0)
 SCROLL_DEFAULT_MAGNITUDE = 5.0
 SCROLL_MIN_STEPS = 1
 SCROLL_MAX_STEPS = 30
-SCROLL_SMALL_SCALE = 0.5
-SCROLL_LARGE_SCALE = 2.0
+SCROLL_SMALL_SCALE = 0.6
+SCROLL_LARGE_SCALE = 1.4
+SCROLL_SMALL_CLAMP = 4.0
+SCROLL_LARGE_FLOOR = 8.0
 SCROLL_UP_TOKENS = (
     "up",
     "haut",
@@ -493,15 +495,20 @@ class SandboxManager:
     def _apply_scroll_hint_scaling(self, magnitude: float, hint: Optional[str], source: str) -> float:
         if magnitude <= 0 or not hint:
             return magnitude
-        if source not in {"delta", "hint-number"}:
-            return magnitude
         lowered = hint.lower()
-        multiplier = 1.0
-        if any(token in lowered for token in SCROLL_SMALL_TOKENS):
-            multiplier *= SCROLL_SMALL_SCALE
-        if any(token in lowered for token in SCROLL_LARGE_TOKENS):
-            multiplier *= SCROLL_LARGE_SCALE
-        return max(magnitude * multiplier, 0.1)
+        has_small = any(token in lowered for token in SCROLL_SMALL_TOKENS)
+        has_large = any(token in lowered for token in SCROLL_LARGE_TOKENS)
+
+        adjusted = magnitude
+        if has_small:
+            adjusted = min(adjusted, SCROLL_SMALL_CLAMP)
+            adjusted = max(adjusted * SCROLL_SMALL_SCALE, 0.4)
+        elif has_large:
+            adjusted = max(adjusted, SCROLL_LARGE_FLOOR)
+            adjusted = adjusted * SCROLL_LARGE_SCALE
+        elif source == "default":
+            adjusted = max(min(adjusted, 5.0), 1.5)
+        return adjusted
 
     def _scale_scroll_magnitude(self, magnitude: float) -> int:
         if magnitude <= 0:
