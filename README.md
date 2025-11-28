@@ -86,3 +86,4 @@ Tous les paramètres sont optionnels : si une clé est absente, la valeur par d�
 - Les actions `scroll` produisent désormais des événements de molette (boutons 4/5) et interprètent la valeur de `coordinates.y` ainsi que les indications textuelles (`scroll down`, `vers le haut`, `page down`, etc.) pour ajuster sens et intensité.
 - Le système suppose que noVNC répond sur le port 6901 ; adaptez `host_vnc_port` dans `SandboxManager` si nécessaire.
 - Pour simuler des raccourcis clavier, incluez des tokens entre chevrons dans vos réponses (ex. `<CTRL+L>`, `<ENTER>`). Ils sont interprétés par l'agent et envoyés via `xdotool key` avant/après les chaînes tapées.
+- Les modèles qui exposent un mode *reasoning* ou des balises `<think>` sont détectés automatiquement. Les réflexions sont affichées dans les logs Streamlit et dans l'historique des actions, sans configuration supplémentaire.

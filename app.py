@@ -87,6 +87,8 @@ with col2:
             f"{(action.x, action.y) if action.x is not None and action.y is not None else ''} "
             f"{action.text or ''}"
         )
+        if action.reasoning:
+            st.caption(action.reasoning)
         if entry["screenshot"]:
             st.image(entry["screenshot"], use_column_width=True)
 
@@ -104,6 +106,8 @@ if user_prompt:
         st.session_state.latest_screenshot = screenshot
 
         action: AgentAction = vision.decide_action(screenshot, user_prompt)
+        if action.reasoning:
+            log(f"Model reasoning: {action.reasoning}")
         log(f"Model (step {step}): {action.raw_response}")
         push_trace(step, action, screenshot)
 
