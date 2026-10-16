@@ -26,6 +26,7 @@ env/
 # Streamlit
 .streamlit/
 logs/
+trajectories/
 
 # Docker / runtime outputs
 *.log

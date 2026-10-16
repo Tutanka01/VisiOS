@@ -1,0 +1,14 @@
+ARG BASE_IMAGE=tutanka01/agentic:osbase
+FROM ${BASE_IMAGE}
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    imagemagick \
+    scrot \
+    wmctrl \
+    x11-apps \
+    xdotool \
+    && rm -rf /var/lib/apt/lists/*
+
+USER visios-user

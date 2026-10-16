@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Firefox launcher used by the panel, xdg-open and the agent.
+# Shares the desktop session and clears stale profile locks left by a crash,
+# the usual reason Firefox "refuses to open" in containers.
+[ -r /etc/profile.d/visios.sh ] && . /etc/profile.d/visios.sh
+
+export MOZ_ENABLE_WAYLAND=0 MOZ_CRASHREPORTER_DISABLE=1 NO_AT_BRIDGE=1
+
+if ! pgrep -u "$(id -u)" -x firefox-esr >/dev/null 2>&1; then
+  rm -f "$HOME"/.mozilla/firefox*/*/lock "$HOME"/.mozilla/firefox*/*/.parentlock 2>/dev/null
+fi
+
+exec /usr/bin/firefox-esr "$@"

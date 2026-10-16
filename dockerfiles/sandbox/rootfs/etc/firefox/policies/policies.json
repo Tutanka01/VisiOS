@@ -1,0 +1,41 @@
+{
+  "policies": {
+    "DisableAppUpdate": true,
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "DisableFeedbackCommands": true,
+    "DisableProfileImport": true,
+    "DisableSetDesktopBackground": true,
+    "DontCheckDefaultBrowser": true,
+    "NoDefaultBookmarks": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "HardwareAcceleration": false,
+    "PasswordManagerEnabled": false,
+    "OfferToSaveLogins": false,
+    "PromptForDownloadLocation": false,
+    "DefaultDownloadDirectory": "${home}/Downloads",
+    "DisplayBookmarksToolbar": "never",
+    "DNSOverHTTPS": { "Enabled": false },
+    "SearchEngines": { "Default": "DuckDuckGo" },
+    "Homepage": { "URL": "https://duckduckgo.com/", "StartPage": "homepage" },
+    "FirefoxHome": {
+      "Search": true,
+      "TopSites": false,
+      "SponsoredTopSites": false,
+      "Highlights": false,
+      "Pocket": false,
+      "SponsoredPocket": false,
+      "Snippets": false
+    },
+    "UserMessaging": {
+      "WhatsNew": false,
+      "ExtensionRecommendations": false,
+      "FeatureRecommendations": false,
+      "UrlbarInterventions": false,
+      "SkipOnboarding": true,
+      "MoreFromMozilla": false
+    }
+  }
+}

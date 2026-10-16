@@ -1,0 +1,72 @@
+services:
+  # Cockpit VisiOS (FastAPI + WebSocket)
+  visios-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: visios-app
+    ports:
+      - "8501:8501"
+    environment:
+      # Paramètres conteneur sandbox
+      - VISIOS_SANDBOX_IMAGE=${VISIOS_SANDBOX_IMAGE:-visios-sandbox:local}
+      - VISIOS_SANDBOX_NAME=${VISIOS_SANDBOX_NAME:-visios-sandbox}
+      - VISIOS_SANDBOX_PORT=${VISIOS_SANDBOX_PORT:-6901}
+      - VISIOS_SANDBOX_WIDTH=${VISIOS_SANDBOX_WIDTH:-1600}
+      - VISIOS_SANDBOX_HEIGHT=${VISIOS_SANDBOX_HEIGHT:-900}
+      - VISIOS_SANDBOX_PLATFORM=${VISIOS_SANDBOX_PLATFORM:-}
+      - VISIOS_VNC_PASSWORD=${VISIOS_VNC_PASSWORD:-password}
+      # Endpoints et modèles IA
+      - VISIOS_OLLAMA_URL=${VISIOS_OLLAMA_URL:-http://host.docker.internal:1234}
+      - VISIOS_OLLAMA_MODEL=${VISIOS_OLLAMA_MODEL:-qwen/qwen3-vl-8b}
+      - VISIOS_OLLAMA_TEMPERATURE=${VISIOS_OLLAMA_TEMPERATURE:-0.1}
+      - VISIOS_OLLAMA_TIMEOUT=${VISIOS_OLLAMA_TIMEOUT:-120}
+      - VISIOS_API_MODE=${VISIOS_API_MODE:-openai}
+      - VISIOS_OPENAI_ENDPOINT=${VISIOS_OPENAI_ENDPOINT:-chat_completions}
+      - VISIOS_AGENT_MAX_STEPS=${VISIOS_AGENT_MAX_STEPS:-25}
+      - VISIOS_ACTION_DELAY=${VISIOS_ACTION_DELAY:-0.3}
+      - VISIOS_COORD_MODE=${VISIOS_COORD_MODE:-auto}
+      - VISIOS_MODEL_IMAGE_WIDTH=${VISIOS_MODEL_IMAGE_WIDTH:-1280}
+      - VISIOS_SAFETY_MODE=${VISIOS_SAFETY_MODE:-balanced}
+      - VISIOS_THINKING=${VISIOS_THINKING:-budget}
+      - VISIOS_THINKING_BUDGET=${VISIOS_THINKING_BUDGET:-6000}
+      - VISIOS_ALLOW_SHELL=${VISIOS_ALLOW_SHELL:-true}
+      - VISIOS_REPEAT_TOLERANCE=${VISIOS_REPEAT_TOLERANCE:-2}
+      - VISIOS_INPUT_BACKEND=${VISIOS_INPUT_BACKEND:-xdotool}
+      # VNC - vncdotool s'exécute dans le sandbox, d'où 127.0.0.1
+      - VISIOS_VNC_HOST=127.0.0.1
+      - VISIOS_VNC_PORT=${VISIOS_VNC_PORT:-5900}
+      # Interface
+      - VISIOS_IFRAME_URL=${VISIOS_IFRAME_URL:-http://localhost:6901/vnc_lite.html}
+      - VISIOS_IFRAME_HEIGHT=${VISIOS_IFRAME_HEIGHT:-78vh}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      visios-sandbox:
+        condition: service_healthy
+    networks:
+      - visios-network
+    restart: unless-stopped
+
+  # Bureau Linux piloté par l'agent (Debian + XFCE + Firefox ESR, natif amd64/arm64)
+  visios-sandbox:
+    build:
+      context: dockerfiles/sandbox
+      args:
+        DESKTOP_LANG: ${VISIOS_DESKTOP_LANG:-en_US.UTF-8}
+    image: ${VISIOS_SANDBOX_IMAGE:-visios-sandbox:local}
+    container_name: visios-sandbox
+    shm_size: "512m"
+    ports:
+      - "127.0.0.1:${VISIOS_SANDBOX_PORT:-6901}:6901"
+      - "127.0.0.1:5900:5900"
+    environment:
+      - VNC_RESOLUTION=${VISIOS_SANDBOX_WIDTH:-1600}x${VISIOS_SANDBOX_HEIGHT:-900}
+      - VNC_PW=${VISIOS_VNC_PASSWORD:-password}
+    networks:
+      - visios-network
+    restart: unless-stopped
+
+networks:
+  visios-network:
+    driver: bridge

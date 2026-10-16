@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VisiOS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23A493FF'/%3E%3Cpath d='M9 8l12 7-5.2 1.4L19 23l-2.6 1.2-3.1-6.6L9 21z' fill='%231B1533'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app" id="app" data-running="false" data-phase="idle">
+    <header class="bar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M9 8l12 7-5.2 1.4L19 23l-2.6 1.2-3.1-6.6L9 21z"/></svg>
+        <span class="brand-name">VisiOS</span>
+        <span class="brand-demo" id="demo-flag" hidden>démo</span>
+      </div>
+      <div class="health">
+        <span class="pill" id="sandbox-pill" data-tone="idle"><i class="dot"></i>Bureau <b id="sandbox-state">…</b></span>
+        <span class="pill" id="model-pill" data-tone="idle"><i class="dot"></i>Modèle <b id="model-name">…</b></span>
+        <span class="pill" id="link-pill" data-tone="idle" hidden><i class="dot"></i><b>Reconnexion…</b></span>
+      </div>
+      <button class="icon-btn" id="open-settings" type="button" aria-label="Réglages" title="Réglages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
+    </header>
+
+    <main class="stage">
+      <section class="screen-col" aria-label="Bureau">
+        <div class="screen-wrap" id="screen-wrap">
+          <div class="screen" id="screen">
+            <iframe id="vnc" title="Bureau VisiOS" allow="clipboard-read; clipboard-write"></iframe>
+            <img id="frame" alt="Dernière capture du bureau" hidden>
+            <div class="overlay" aria-hidden="true">
+              <div class="ghost" id="ghost">
+                <svg viewBox="0 0 24 24"><path d="M5 3l14 8.2-6 1.6L16.4 20l-3 1.4-3.5-7.4L5 18z"/></svg>
+                <span class="ghost-tag" id="ghost-tag">VisiOS</span>
+              </div>
+              <div class="callout" id="callout"></div>
+            </div>
+            <div class="control-badge" id="control-badge">
+              <span class="control-dot"></span>VisiOS a la main
+              <button type="button" id="badge-stop">Reprendre la main</button>
+            </div>
+            <div class="screen-empty" id="screen-empty" hidden>
+              <p class="screen-empty-title" id="screen-empty-title">Le bureau est éteint</p>
+              <p class="screen-empty-text" id="screen-empty-text">Démarre-le pour que VisiOS puisse agir. Il démarre aussi tout seul à ta première demande.</p>
+              <button type="button" class="btn primary" id="screen-start">Démarrer le bureau</button>
+            </div>
+          </div>
+        </div>
+        <div class="narration" id="narration" aria-live="polite">
+          <p class="narration-text" id="narration-text">Dis à VisiOS ce que tu veux faire sur ce bureau.</p>
+          <div class="narration-meta">
+            <span class="phase" id="phase-label">Prêt</span>
+            <span class="progress" id="progress" hidden><span class="progress-fill" id="progress-fill"></span></span>
+            <span class="stepcount" id="stepcount"></span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="chat-col" aria-label="Conversation">
+        <div class="thread" id="thread">
+          <div class="welcome" id="welcome">
+            <h1>Que doit faire la machine ?</h1>
+            <p>Décris le résultat voulu. VisiOS regarde l'écran, agit avec la souris et le clavier, et vérifie chaque étape.</p>
+            <div class="suggestions" id="suggestions">
+              <button type="button">Ouvre Firefox et cherche la météo à Paris</button>
+              <button type="button">Crée un fichier courses.txt sur le bureau avec pain, lait et œufs</button>
+              <button type="button">Ouvre le terminal et affiche l'espace disque libre</button>
+              <button type="button">Va sur fr.wikipedia.org et ouvre l'article du jour</button>
+            </div>
+          </div>
+        </div>
+
+        <form class="composer" id="composer" autocomplete="off">
+          <textarea id="prompt" rows="1" placeholder="Que veux-tu que VisiOS fasse ?" aria-label="Instruction"></textarea>
+          <div class="composer-row">
+            <span class="composer-hint" id="composer-hint">Entrée pour envoyer, Maj+Entrée pour aller à la ligne</span>
+            <button type="button" class="btn danger" id="stop-btn" hidden>Arrêter</button>
+            <button type="submit" class="btn primary" id="send-btn">Envoyer</button>
+          </div>
+        </form>
+      </aside>
+    </main>
+
+    <dialog class="settings" id="settings">
+      <form method="dialog" class="settings-body">
+        <header class="settings-head">
+          <h2>Réglages</h2>
+          <button class="icon-btn" value="close" aria-label="Fermer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </header>
+
+        <section class="field">
+          <label for="max-steps">Étapes maximum par tâche <output id="max-steps-out">25</output></label>
+          <input type="range" id="max-steps" min="5" max="60" step="1" value="25">
+        </section>
+
+        <section class="field">
+          <span class="field-label">Prudence</span>
+          <div class="segmented" id="safety">
+            <label><input type="radio" name="safety" value="balanced"><span>Équilibrée</span></label>
+            <label><input type="radio" name="safety" value="strict"><span>Supervisée</span></label>
+            <label><input type="radio" name="safety" value="fast"><span>Rapide</span></label>
+          </div>
+          <p class="field-help" id="safety-help"></p>
+        </section>
+
+        <section class="field">
+          <span class="field-label">Réflexion du modèle</span>
+          <div class="segmented" id="thinking">
+            <label><input type="radio" name="thinking" value="full"><span>Complète</span></label>
+            <label><input type="radio" name="thinking" value="budget"><span>Limitée</span></label>
+            <label><input type="radio" name="thinking" value="off"><span>Désactivée</span></label>
+          </div>
+          <p class="field-help" id="thinking-help"></p>
+        </section>
+
+        <section class="field">
+          <span class="field-label">Affichage du bureau</span>
+          <div class="segmented" id="display">
+            <label><input type="radio" name="display" value="vnc"><span>En direct</span></label>
+            <label><input type="radio" name="display" value="screenshots"><span>Captures de l'agent</span></label>
+          </div>
+        </section>
+
+        <section class="field">
+          <span class="field-label">Bureau</span>
+          <div class="row">
+            <button type="button" class="btn" id="sandbox-start">Démarrer</button>
+            <button type="button" class="btn" id="sandbox-stop">Éteindre</button>
+            <button type="button" class="btn" id="clear-thread">Effacer la conversation</button>
+          </div>
+        </section>
+
+        <section class="field model-info">
+          <span class="field-label">Modèle</span>
+          <dl>
+            <div><dt>Nom</dt><dd id="info-model">…</dd></div>
+            <div><dt>API</dt><dd id="info-api">…</dd></div>
+            <div><dt>Coordonnées</dt><dd id="info-coords">…</dd></div>
+          </dl>
+        </section>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+  </div>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
